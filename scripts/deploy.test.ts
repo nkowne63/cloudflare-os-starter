@@ -199,6 +199,23 @@ test("rejects malformed AI Gateway providers and account", () => {
     /aiGateway.accountId must be null or 32 hexadecimal/i);
 });
 
+test("validates and emits proxy authHeader secret names", async () => {
+  const config = variant((c) => {
+    c.gatekeeperProxy.services.api = {
+      upstream: "https://api.example.com", via: "public", writeMethods: "allow", authHeader: "API_TOKEN",
+    };
+  });
+  const generated = generateConfigs(config, await baseConfigs());
+  assert.deepEqual(generated.proxyGatekeeper.secrets, { required: ["API_TOKEN"] });
+  assert.match(generated.proxyGatekeeper.vars!.PROXY_SERVICES as string, /authHeader/);
+
+  assert.throws(() => validateConfig(variant((c) => {
+    c.gatekeeperProxy.services.api = {
+      upstream: "https://api.example.com", via: "public", writeMethods: "allow", authHeader: "bad-name",
+    };
+  })), /authHeader.*variable/i);
+});
+
 test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", async () => {
   const generated = generateConfigs(validConfig, await baseConfigs());
   const vars = generated.workshop.vars!;

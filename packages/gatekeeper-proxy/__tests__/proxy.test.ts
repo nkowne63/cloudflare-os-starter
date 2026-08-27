@@ -23,6 +23,13 @@ function queue() {
 }
 
 describe("proxy service configuration and resources", () => {
+  it("accepts an authHeader Wrangler variable name", () => {
+    const services = parseProxyServices(JSON.stringify({
+      api: { upstream: "https://api.example.com", via: "public", writeMethods: "allow", authHeader: "API_TOKEN" },
+    }));
+    expect(services.get("api")?.authHeader).toBe("API_TOKEN");
+  });
+
   it("accepts exact proxy service resources and rejects path or host substitutions", () => {
     const services = parseProxyServices(serviceJson);
     expect(resolveProxyResource("proxy://esm", services).service).toBe("esm");
@@ -46,6 +53,33 @@ describe("proxy service configuration and resources", () => {
 });
 
 describe("proxy request policy and transport", () => {
+  it("uses the authHeader secret for Authorization and ignores caller credentials", async () => {
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      const headers = new Headers(init.headers);
+      expect(headers.get("authorization")).toBe("Bearer upstream-secret");
+      expect(headers.get("cookie")).toBeNull();
+      expect(headers.get("host")).toBeNull();
+      return new Response("ok");
+    });
+    const services = parseProxyServices(JSON.stringify({ api: {
+      upstream: "https://api.example.com", via: "public", writeMethods: "allow", authHeader: "API_TOKEN",
+    } }));
+    const session = new ProxySessionImpl(queue(), { service: "api", config: services.get("api")! }, {
+      fetch, env: { API_TOKEN: "Bearer upstream-secret" },
+    });
+    await session.request({ path: "/data", method: "GET", headers: {
+      Authorization: "Bearer caller-secret", Cookie: "caller=secret", Host: "evil.example",
+    } });
+  });
+
+  it("rejects an authHeader service when its Wrangler secret is unavailable", async () => {
+    const services = parseProxyServices(JSON.stringify({ api: {
+      upstream: "https://api.example.com", via: "public", writeMethods: "allow", authHeader: "API_TOKEN",
+    } }));
+    const session = new ProxySessionImpl(queue(), { service: "api", config: services.get("api")! }, { fetch: vi.fn() });
+    await expect(session.request({ path: "/data", method: "GET" })).rejects.toThrow(/authHeader/i);
+  });
+
   it("passes public GET with filtered headers and manual redirects", async () => {
     const q = queue();
     const fetch = vi.fn(async (_url: string, init: RequestInit) => {

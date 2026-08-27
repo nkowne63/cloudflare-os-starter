@@ -54,5 +54,8 @@ When applying this starter over an existing deployment, keep the tracked placeho
 such as an existing Codex service. To update only selected Workers during a migration, set
 `CLOUDFLARE_OS_DEPLOY_ONLY=proxyGatekeeper,workshop,router`.
 
+Any service may set `authHeader` to a Wrangler secret variable name. Its value is sent only as the
+upstream `Authorization` header; caller `Authorization`, `Cookie`, and `Host` headers are ignored.
+
 The proxy Worker is private behind the router in the generated deployment configs: `workers_dev`
 and Preview URLs are disabled, and the router binding has no RPC entrypoint.

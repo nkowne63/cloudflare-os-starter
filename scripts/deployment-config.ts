@@ -38,6 +38,7 @@ export interface ProxyServiceConfigInput {
   via: "public" | "tunnel" | "vpc";
   writeMethods: "deny" | "approve" | "allow";
   binding?: string;
+  authHeader?: string;
   auth?: { clientIdVar?: string; clientSecretVar?: string };
   /** Existing Workers VPC service ID; deploy-time only, never copied into PROXY_SERVICES. */
   serviceId?: string;

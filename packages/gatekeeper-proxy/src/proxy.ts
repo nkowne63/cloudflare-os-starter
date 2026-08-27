@@ -38,6 +38,7 @@ export type ProxyServiceConfig = {
   via: "public" | "tunnel" | "vpc";
   writeMethods: "deny" | "approve" | "allow";
   binding?: string;
+  authHeader?: string;
   auth?: { clientIdVar?: string; clientSecretVar?: string };
 };
 
@@ -118,7 +119,7 @@ function parseService(name: string, value: unknown): ProxyServiceConfig {
     throw new Error(`Malformed proxy service: ${name || "(empty)"}`);
   }
   const record = value as Record<string, unknown>;
-  const allowed = new Set(["upstream", "via", "writeMethods", "binding", "auth"]);
+  const allowed = new Set(["upstream", "via", "writeMethods", "binding", "authHeader", "auth"]);
   if (Object.keys(record).some(key => !allowed.has(key))) throw new Error(`Unknown proxy service field: ${name}`);
   if (record.via !== "public" && record.via !== "tunnel" && record.via !== "vpc") {
     throw new Error(`Invalid via for proxy service: ${name}`);
@@ -131,6 +132,7 @@ function parseService(name: string, value: unknown): ProxyServiceConfig {
     throw new Error(`Invalid binding for proxy service: ${name}`);
   }
   if (record.via !== "vpc" && record.binding !== undefined) throw new Error(`binding is only valid for vpc service: ${name}`);
+  if (record.authHeader !== undefined && (typeof record.authHeader !== "string" || !ENV_NAME.test(record.authHeader))) throw new Error(`Invalid authHeader variable for proxy service: ${name}`);
   let auth: ProxyServiceConfig["auth"];
   if (record.auth !== undefined) {
     if (record.via !== "tunnel" || !record.auth || typeof record.auth !== "object" || Array.isArray(record.auth)) {
@@ -152,6 +154,7 @@ function parseService(name: string, value: unknown): ProxyServiceConfig {
     via: record.via,
     writeMethods,
     ...(record.binding ? { binding: record.binding as string } : {}),
+    ...(record.authHeader ? { authHeader: record.authHeader as string } : {}),
     ...(auth ? { auth } : {}),
   };
 }
@@ -330,6 +333,11 @@ async function executeProxyRequest(
       if (typeof clientId !== "string" || typeof clientSecret !== "string" || !clientId || !clientSecret) throw new Error("Tunnel Access credentials are not configured.");
       inputHeaders["cf-access-client-id"] = clientId;
       inputHeaders["cf-access-client-secret"] = clientSecret;
+    }
+    if (bound.config.authHeader) {
+      const value = (transport.env ?? {})[bound.config.authHeader];
+      if (typeof value !== "string" || !value) throw new Error("authHeader secret is not configured.");
+      inputHeaders.authorization = value;
     }
     let fetcher = transport.fetch;
     if (bound.config.via === "vpc") {

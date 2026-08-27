@@ -336,7 +336,7 @@ function validateProxyServices(services: unknown): void {
     if (!proxyServiceNamePattern.test(name) || name === "*") throw new Error(`Invalid proxy service name: ${name}`);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Malformed proxy service: ${name}`);
     const service = value as Record<string, unknown>;
-    const allowedFields = new Set(["upstream", "via", "writeMethods", "binding", "auth", "serviceId"]);
+    const allowedFields = new Set(["upstream", "via", "writeMethods", "binding", "authHeader", "auth", "serviceId"]);
     if (Object.keys(service).some((key) => !allowedFields.has(key))) throw new Error(`Unknown proxy service field: ${name}`);
     let upstream: URL;
     try { upstream = new URL(typeof service.upstream === "string" ? service.upstream : ""); } catch { throw new Error(`Invalid proxy upstream: ${name}`); }
@@ -367,6 +367,7 @@ function validateProxyServices(services: unknown): void {
         if (!["clientIdVar", "clientSecretVar"].includes(key) || typeof variable !== "string" || !proxyEnvNamePattern.test(variable)) throw new Error(`Invalid proxy auth variable: ${name}`);
       }
     }
+    if (service.authHeader !== undefined && (typeof service.authHeader !== "string" || !proxyEnvNamePattern.test(service.authHeader))) throw new Error(`Invalid proxy authHeader variable: ${name}`);
   }
 }
 
@@ -674,6 +675,9 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   proxyGatekeeper.vars = {
     PROXY_SERVICES: JSON.stringify(proxyServices),
   };
+  const proxySecrets = Object.values(config.gatekeeperProxy.services).flatMap((service) => service.authHeader ? [service.authHeader] : []);
+  if (proxySecrets.length) proxyGatekeeper.secrets = { required: [...new Set([...(proxyGatekeeper.secrets?.required ?? []), ...proxySecrets])] };
+  else delete proxyGatekeeper.secrets;
   const vpcServices = Object.entries(config.gatekeeperProxy.services)
     .filter(([, service]) => service.via === "vpc")
     .map(([serviceName, service]) => ({
