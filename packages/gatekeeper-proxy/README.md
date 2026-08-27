@@ -18,8 +18,10 @@ intended. `approve` records a bounded request and applies it only after the Work
 
 Tunnel services send Cloudflare Access client headers using `CF_ACCESS_CLIENT_ID` and
 `CF_ACCESS_CLIENT_SECRET` Wrangler secrets by default. Override those names with `auth` variable
-names. VPC services use the configured `binding`, or `SERVICE_<SERVICE>` when omitted. No tunnel
-secret or forbidden header is returned to the caller.
+names. VPC services use the configured `binding`, or `SERVICE_<SERVICE>` when omitted. For a
+deployed VPC service, add its non-secret Cloudflare `serviceId` to the deployment overlay; the
+deploy script turns that into Wrangler's `vpc_services` binding and strips the ID from the runtime
+`PROXY_SERVICES` variable. No tunnel secret or forbidden header is returned to the caller.
 
 All paths, headers, bodies, and responses are bounded and validated. The Worker rejects traversal,
 host substitution, WebSocket/SSE streaming, forbidden credential headers, and payloads over 8 MiB.
@@ -44,6 +46,13 @@ secret literals. Production secrets are installed with Wrangler, for example:
 pnpm exec wrangler secret put CF_ACCESS_CLIENT_ID --name <proxy-worker-name>
 pnpm exec wrangler secret put CF_ACCESS_CLIENT_SECRET --name <proxy-worker-name>
 ```
+
+When applying this starter over an existing deployment, keep the tracked placeholder
+`deployment.jsonc` unchanged. Use `pnpm run deploy --config /path/to/live-deployment.jsonc` or
+`CLOUDFLARE_OS_DEPLOYMENT_CONFIG=/path/to/live-deployment.jsonc pnpm run deploy`; the optional
+`preservedServices.router` and `preservedServices.workshop` arrays replay non-starter bindings
+such as an existing Codex service. To update only selected Workers during a migration, set
+`CLOUDFLARE_OS_DEPLOY_ONLY=proxyGatekeeper,workshop,router`.
 
 The proxy Worker is private behind the router in the generated deployment configs: `workers_dev`
 and Preview URLs are disabled, and the router binding has no RPC entrypoint.

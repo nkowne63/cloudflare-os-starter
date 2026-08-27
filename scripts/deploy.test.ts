@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { parse, type ParseError } from "jsonc-parser";
-import { aiGatewayPlan, buildCommands, generateConfigs, validateConfig } from "./deploy.ts";
+import {
+  aiGatewayPlan,
+  buildCommands,
+  deploymentConfigPath,
+  deploymentSelection,
+  generateConfigs,
+  validateConfig,
+} from "./deploy.ts";
 import type {
   BaseConfigs,
   DeploymentConfig,
@@ -286,6 +293,82 @@ test("registers the configured proxy Worker on Workshop and router", async () =>
     { binding: "GATEKEEPER_PROXY", service: "acme-cloudflare-os-proxy" });
   assert.equal(anyGenerated.proxyGatekeeper.vars.PROXY_SERVICES, JSON.stringify(config.gatekeeperProxy.services));
   assert.ok(buildCommands(config).some(({ args }) => args.includes("gatekeeper-proxy")));
+});
+
+test("preserves live services and emits VPC service bindings without leaking service IDs", async () => {
+  const config = variant((c) => {
+    c.gatekeeperProxy = {
+      services: {
+        esm: { upstream: "https://esm.sh", via: "public", writeMethods: "deny" },
+        "k3s-rpi": {
+          upstream: "https://127.0.0.1:6443",
+          via: "vpc",
+          writeMethods: "allow",
+          binding: "K3S_RPI",
+          serviceId: "01a0422b-3156-71f2-a53d-f077b8964f8e",
+        },
+      },
+    };
+    c.preservedServices = {
+      router: [{ binding: "CODEX_GATEKEEPER", service: "codex-openai-wrapper", environment: "production" }],
+      workshop: [
+        { binding: "CODEX_GATEKEEPER", service: "codex-openai-wrapper", environment: "production" },
+        { binding: "K3S_GATEKEEPER", service: "k3s-gatekeeper", environment: "production" },
+        {
+          binding: "GATEKEEPER_DESKTOP_COMMANDER",
+          service: "nkowne63-cloudflare-os-desktop-commander-gatekeeper",
+          entrypoint: "GatekeeperVendor",
+          environment: "production",
+        },
+      ],
+    };
+  });
+  const generated = generateConfigs(config, await baseConfigs());
+
+  assert.deepEqual(generated.proxyGatekeeper.vpc_services, [
+    { binding: "K3S_RPI", service_id: "01a0422b-3156-71f2-a53d-f077b8964f8e" },
+  ]);
+  assert.deepEqual(JSON.parse(generated.proxyGatekeeper.vars!.PROXY_SERVICES as string), {
+    esm: { upstream: "https://esm.sh", via: "public", writeMethods: "deny" },
+    "k3s-rpi": {
+      upstream: "https://127.0.0.1:6443",
+      via: "vpc",
+      writeMethods: "allow",
+      binding: "K3S_RPI",
+    },
+  });
+  assert.deepEqual(
+    generated.router.services!.find((service) => service.binding === "CODEX_GATEKEEPER"),
+    { binding: "CODEX_GATEKEEPER", service: "codex-openai-wrapper", environment: "production" });
+  assert.deepEqual(
+    generated.workshop.services!.find((service) => service.binding === "K3S_GATEKEEPER"),
+    { binding: "K3S_GATEKEEPER", service: "k3s-gatekeeper", environment: "production" });
+  assert.equal(generated.workshop.services!.filter(
+    (service) => service.binding === "GATEKEEPER_PROXY").length, 1);
+});
+
+test("requires a deployment VPC service ID and supports an isolated config path", () => {
+  assert.throws(
+    () => validateConfig(variant((c) => {
+      c.gatekeeperProxy.services = {
+        "k3s-rpi": { upstream: "https://127.0.0.1:6443", via: "vpc", writeMethods: "allow" },
+      };
+    })),
+    /VPC.*serviceId/i);
+  assert.equal(
+    deploymentConfigPath(["node", "scripts/deploy.ts", "--config", "/tmp/live-deployment.jsonc"]),
+    "/tmp/live-deployment.jsonc",
+  );
+});
+
+test("selects only the explicitly requested live deployment workers", () => {
+  assert.deepEqual(
+    deploymentSelection({ CLOUDFLARE_OS_DEPLOY_ONLY: "proxyGatekeeper,workshop,router" }),
+    ["proxyGatekeeper", "workshop", "router"],
+  );
+  assert.deepEqual(deploymentSelection({}), [
+    "errorReporter", "context", "scheduler", "customGatekeeper", "proxyGatekeeper", "workshop", "router",
+  ]);
 });
 
 test("gives the router the public route, the frontend, and every service binding", async () => {

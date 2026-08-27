@@ -10,6 +10,7 @@
 import type {
   BindingDecl,
   ObservabilityConfig,
+  ServiceBinding,
   WranglerConfig,
 } from "../cloudflare-os/scripts/release/manifest-lib.ts";
 
@@ -38,6 +39,8 @@ export interface ProxyServiceConfigInput {
   writeMethods: "deny" | "approve" | "allow";
   binding?: string;
   auth?: { clientIdVar?: string; clientSecretVar?: string };
+  /** Existing Workers VPC service ID; deploy-time only, never copied into PROXY_SERVICES. */
+  serviceId?: string;
 }
 
 /** Cloudflare Access trust boundary and the `/admin` allowlist. */
@@ -97,6 +100,17 @@ export interface DeploymentObservabilityConfig {
   traces: { enabled: boolean; headSamplingRate: number };
 }
 
+/** A live service binding that must survive a starter re-deploy. */
+export interface PreservedServiceBinding {
+  binding: string;
+  service: string;
+  entrypoint?: string;
+  environment?: string;
+}
+
+/** Wrangler's service binding plus the production environment selector accepted by Wrangler. */
+export type DeploymentServiceBinding = ServiceBinding & { environment?: string };
+
 /**
  * `deployment.jsonc`, parsed.
  *
@@ -132,6 +146,11 @@ export interface DeploymentConfig {
   customGatekeeper: { name: string; message: string };
   /** Non-secret HTTP service definitions for the Gatekeeper Proxy. */
   gatekeeperProxy: { services: Record<string, ProxyServiceConfigInput> };
+  /** Existing non-starter bindings to replay when migrating an already-live deployment. */
+  preservedServices?: {
+    router?: PreservedServiceBinding[];
+    workshop?: PreservedServiceBinding[];
+  };
   /** Private explicit-issue destination. */
   errorReporting: { enabled: boolean; environment?: string; release?: string | null };
   /** Workshop KV/R2. `null` requests Wrangler automatic provisioning. */
@@ -164,7 +183,7 @@ export interface ProdObservabilityConfig extends ObservabilityConfig {
  * `assets` is *not* redeclared -- upstream's is already the shape written here.
  */
 export type ProdWranglerConfig =
-  Omit<WranglerConfig, "observability" | "artifacts" | "kv_namespaces" | "r2_buckets">
+  Omit<WranglerConfig, "observability" | "artifacts" | "kv_namespaces" | "r2_buckets" | "services">
   & {
     /** KV bindings. `id` absent requests Wrangler automatic provisioning. */
     kv_namespaces?: (BindingDecl & { id?: string })[];
@@ -185,6 +204,10 @@ export type ProdWranglerConfig =
     secrets?: { required: string[] };
     /** Artifacts namespaces. An array, unlike upstream's single-binding declaration. */
     artifacts?: { binding: string; namespace: string }[];
+    /** Service bindings, including Wrangler's optional production environment selector. */
+    services?: DeploymentServiceBinding[];
+    /** Workers VPC bindings; service IDs are account-scoped and non-secret. */
+    vpc_services?: { binding: string; service_id: string; remote?: boolean }[];
   };
 
 /** The generated configs, keyed as `deployment.jsonc` keys them. */

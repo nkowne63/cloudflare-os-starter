@@ -111,6 +111,10 @@
       }
     }
   },
+  // For a VPC entry, add a fixed `binding` and the non-secret Cloudflare VPC `serviceId` in an
+  // ignored live overlay. The deploy script emits `vpc_services` and never copies `serviceId` into
+  // the Worker's runtime PROXY_SERVICES variable. `preservedServices` is likewise overlay-only:
+  // it retains existing Router/Workshop bindings during a live migration.
 
   // Explicit backend issue reports go to a private Worker that emits structured console errors.
   // Set release to a commit/version when your deployment pipeline has one.

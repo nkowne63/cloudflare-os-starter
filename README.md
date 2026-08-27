@@ -97,6 +97,12 @@ A Workers AI model catalog is enabled by default and needs no API token: the Wor
 
 The starter includes a controlled HTTP [Gatekeeper Proxy](packages/gatekeeper-proxy/README.md). Configure exact `proxy://<service>` resources, transport, and write policy in `deployment.jsonc`; the example Grafana service demonstrates explicit approval-free write access and should be reviewed before production use.
 
+For a live migration, keep real account values in an ignored or temporary JSONC overlay and pass it
+with `pnpm run deploy --config /path/to/live-deployment.jsonc`. `preservedServices` retains existing
+Router/Workshop service bindings, and `CLOUDFLARE_OS_DEPLOY_ONLY=proxyGatekeeper,workshop,router`
+limits an apply to those Workers while the generated configs keep the remaining live identities
+unchanged.
+
 Git-backed Context collections are disabled by default. Accounts with Artifacts access can enable them in `context.artifacts`; see [Context Artifacts](docs/customization.md#context-artifacts).
 
 Backend error reporting is enabled without a vendor account. Explicit upstream issue events become structured logs in the private Error Reporter Worker; see [Observability and error reporting](docs/observability.md).

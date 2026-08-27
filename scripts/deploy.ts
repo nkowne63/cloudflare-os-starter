@@ -11,8 +11,10 @@ import type {
   BaseConfigs,
   BuildCommand,
   DeploymentConfig,
+  DeploymentServiceBinding,
   GeneratedConfigs,
   ProdWranglerConfig,
+  ProxyServiceConfigInput,
   RouterRoute,
 } from "./deployment-config.ts";
 
@@ -35,6 +37,13 @@ const defaultContextArtifactsNamespace = "gatekeeper-context-collections";
 const accountIdPattern = /^[a-f\d]{32}$/i;
 const proxyServiceNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const proxyEnvNamePattern = /^[A-Z][A-Z0-9_]{0,127}$/;
+const vpcServiceIdPattern = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
+const workerNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+const deploymentOrder = [
+  "errorReporter", "context", "scheduler", "customGatekeeper", "proxyGatekeeper", "workshop", "router",
+] as const;
+type DeployableWorker = typeof deploymentOrder[number];
 
 const requiredPaths = [
   "accountId",
@@ -225,11 +234,12 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     throw new Error(
       "Router, Workshop, Context, Scheduler, custom Gatekeeper, and proxy Gatekeeper names must be unique.");
   }
-  if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
+  if (!workerNames.every((name) => workerNamePattern.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
   }
 
   validateProxyServices(config.gatekeeperProxy.services);
+  validatePreservedServices(config.preservedServices);
 
   const route = config.workers.router.route;
   if (!route || Boolean(route.workersDev) === Boolean(route.customDomain)) {
@@ -320,25 +330,73 @@ function validateProxyServices(services: unknown): void {
   if (!services || typeof services !== "object" || Array.isArray(services) || !Object.keys(services).length) {
     throw new Error("gatekeeperProxy.services must define at least one service.");
   }
+  const vpcBindings = new Set<string>();
+  const vpcServiceIds = new Set<string>();
   for (const [name, value] of Object.entries(services)) {
     if (!proxyServiceNamePattern.test(name) || name === "*") throw new Error(`Invalid proxy service name: ${name}`);
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Malformed proxy service: ${name}`);
     const service = value as Record<string, unknown>;
-    const allowedFields = new Set(["upstream", "via", "writeMethods", "binding", "auth"]);
+    const allowedFields = new Set(["upstream", "via", "writeMethods", "binding", "auth", "serviceId"]);
     if (Object.keys(service).some((key) => !allowedFields.has(key))) throw new Error(`Unknown proxy service field: ${name}`);
     let upstream: URL;
     try { upstream = new URL(typeof service.upstream === "string" ? service.upstream : ""); } catch { throw new Error(`Invalid proxy upstream: ${name}`); }
     if (!["http:", "https:"].includes(upstream.protocol) || upstream.username || upstream.password || upstream.search || upstream.hash) {
       throw new Error(`Invalid proxy upstream: ${name}`);
     }
-    if (!["public", "tunnel", "vpc"].includes(service.via as string)) throw new Error(`Invalid proxy via: ${name}`);
+    const via = service.via as string;
+    if (!["public", "tunnel", "vpc"].includes(via)) throw new Error(`Invalid proxy via: ${name}`);
     if (!["deny", "approve", "allow"].includes(service.writeMethods as string)) throw new Error(`Invalid proxy writeMethods: ${name}`);
     if (service.binding !== undefined && (typeof service.binding !== "string" || !proxyEnvNamePattern.test(service.binding))) throw new Error(`Invalid proxy binding: ${name}`);
-    if (service.via !== "vpc" && service.binding !== undefined) throw new Error(`Proxy binding is only valid for vpc: ${name}`);
+    if (via !== "vpc" && service.binding !== undefined) throw new Error(`Proxy binding is only valid for vpc: ${name}`);
+    if (via === "vpc") {
+      if (typeof service.serviceId !== "string" || !vpcServiceIdPattern.test(service.serviceId)) {
+        throw new Error(`VPC proxy service requires a valid serviceId: ${name}`);
+      }
+      const binding = service.binding as string | undefined ??
+        `SERVICE_${name.toUpperCase().replaceAll("-", "_")}`;
+      if (vpcBindings.has(binding)) throw new Error(`Duplicate VPC proxy binding: ${binding}`);
+      if (vpcServiceIds.has(service.serviceId)) throw new Error(`Duplicate VPC service ID: ${name}`);
+      vpcBindings.add(binding);
+      vpcServiceIds.add(service.serviceId);
+    } else if (service.serviceId !== undefined) {
+      throw new Error(`serviceId is only valid for vpc service: ${name}`);
+    }
     if (service.auth !== undefined) {
-      if (service.via !== "tunnel" || !service.auth || typeof service.auth !== "object" || Array.isArray(service.auth)) throw new Error(`Invalid proxy auth: ${name}`);
+      if (via !== "tunnel" || !service.auth || typeof service.auth !== "object" || Array.isArray(service.auth)) throw new Error(`Invalid proxy auth: ${name}`);
       for (const [key, variable] of Object.entries(service.auth)) {
         if (!["clientIdVar", "clientSecretVar"].includes(key) || typeof variable !== "string" || !proxyEnvNamePattern.test(variable)) throw new Error(`Invalid proxy auth variable: ${name}`);
+      }
+    }
+  }
+}
+
+function validatePreservedServices(value: DeploymentConfig["preservedServices"]): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("preservedServices must be an object when present.");
+  }
+  for (const [worker, bindings] of Object.entries(value)) {
+    if (worker !== "router" && worker !== "workshop") {
+      throw new Error(`Unknown preserved service target: ${worker}`);
+    }
+    if (!Array.isArray(bindings)) throw new Error(`preservedServices.${worker} must be an array.`);
+    for (const binding of bindings) {
+      if (!binding || typeof binding !== "object" || Array.isArray(binding)) {
+        throw new Error(`Malformed preserved service binding on ${worker}.`);
+      }
+      const record = binding as unknown as Record<string, unknown>;
+      if (Object.keys(record).some((key) => !["binding", "service", "entrypoint", "environment"].includes(key))) {
+        throw new Error(`Unknown preserved service field on ${worker}.`);
+      }
+      if (typeof record.binding !== "string" || !proxyEnvNamePattern.test(record.binding) ||
+          typeof record.service !== "string" || !workerNamePattern.test(record.service)) {
+        throw new Error(`Malformed preserved service binding on ${worker}.`);
+      }
+      for (const key of ["entrypoint", "environment"] as const) {
+        if (record[key] !== undefined &&
+            (typeof record[key] !== "string" || !/^[A-Za-z0-9_-]+$/.test(record[key]))) {
+          throw new Error(`Malformed preserved service ${key} on ${worker}.`);
+        }
       }
     }
   }
@@ -464,6 +522,17 @@ function setCommon(
   };
 }
 
+/** Keep base/live bindings, then let the explicit preservation overlay and generated bindings win. */
+function mergeServices(
+  ...groups: (readonly DeploymentServiceBinding[] | undefined)[]
+): DeploymentServiceBinding[] {
+  const merged = new Map<string, DeploymentServiceBinding>();
+  for (const group of groups) {
+    for (const service of group ?? []) merged.set(service.binding, structuredClone(service));
+  }
+  return [...merged.values()];
+}
+
 export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): GeneratedConfigs {
   validateConfig(config);
   const router = structuredClone(bases.router);
@@ -478,7 +547,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   const origin = publicOrigin(config);
 
   setCommon(router, config, config.workers.router.name, config.workers.router.route);
-  router.services = [
+  router.services = mergeServices(router.services, config.preservedServices?.router, [
     { binding: "WORKSHOP_BACKEND", service: config.workers.workshop.name },
     // No entrypoint and no props: the router forwards whole HTTP requests, unlike the backend's
     // vendor-RPC bindings. The binding name is what picks the /gatekeeper/<name> path.
@@ -486,7 +555,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
     { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
     { binding: "GATEKEEPER_PROXY", service: config.workers.proxyGatekeeper.name },
-  ];
+  ]);
 
   setCommon(workshop, config, config.workers.workshop.name);
   workshop.vars = {
@@ -521,7 +590,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   // Unconditional: as well as being the AI Gateway transport, this binding is what webFetch's
   // toMarkdown() runs on.
   workshop.ai = { binding: "WORKERS_AI" };
-  workshop.services = [
+  workshop.services = mergeServices(workshop.services, config.preservedServices?.workshop, [
     ...(config.errorReporting.enabled ? [{
       binding: "ERROR_REPORTER",
       service: config.workers.errorReporter!.name,
@@ -556,7 +625,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.proxyGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     },
-  ];
+  ]);
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
       ? { id: config.resources.blueprintsKvNamespaceId } : {}) },
@@ -596,9 +665,23 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   };
 
   setCommon(proxyGatekeeper, config, config.workers.proxyGatekeeper.name);
+  const proxyServices: Record<string, Omit<ProxyServiceConfigInput, "serviceId">> = {};
+  for (const [serviceName, definition] of Object.entries(config.gatekeeperProxy.services)) {
+    const runtimeDefinition = { ...definition };
+    delete runtimeDefinition.serviceId;
+    proxyServices[serviceName] = runtimeDefinition;
+  }
   proxyGatekeeper.vars = {
-    PROXY_SERVICES: JSON.stringify(config.gatekeeperProxy.services),
+    PROXY_SERVICES: JSON.stringify(proxyServices),
   };
+  const vpcServices = Object.entries(config.gatekeeperProxy.services)
+    .filter(([, service]) => service.via === "vpc")
+    .map(([serviceName, service]) => ({
+      binding: service.binding ?? `SERVICE_${serviceName.toUpperCase().replaceAll("-", "_")}`,
+      service_id: service.serviceId!,
+    }));
+  if (vpcServices.length) proxyGatekeeper.vpc_services = vpcServices;
+  else delete proxyGatekeeper.vpc_services;
 
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
@@ -688,6 +771,34 @@ async function readDeployment(path: string): Promise<DeploymentConfig> {
   }
 }
 
+/** Resolve a deployment JSONC path without editing the tracked placeholder template. */
+export function deploymentConfigPath(argv: readonly string[] = process.argv): string {
+  const option = argv.indexOf("--config");
+  const candidate = option >= 0
+    ? argv[option + 1]
+    : process.env.CLOUDFLARE_OS_DEPLOYMENT_CONFIG || "deployment.jsonc";
+  if (!candidate || candidate.startsWith("-")) {
+    throw new Error("--config requires a deployment JSONC path.");
+  }
+  return resolve(root, candidate);
+}
+
+/** Select a subset for a live migration; no selector retains the complete deploy order. */
+export function deploymentSelection(
+  env: Record<string, string | undefined> = process.env,
+): DeployableWorker[] {
+  const raw = env.CLOUDFLARE_OS_DEPLOY_ONLY?.trim();
+  if (!raw) return [...deploymentOrder];
+  const requested = raw.split(",").map((name) => name.trim()).filter(Boolean);
+  if (!requested.length || requested.some((name) => !deploymentOrder.includes(name as DeployableWorker))) {
+    throw new Error(`Unknown CLOUDFLARE_OS_DEPLOY_ONLY worker. Use: ${deploymentOrder.join(", ")}.`);
+  }
+  if (new Set(requested).size !== requested.length) {
+    throw new Error("CLOUDFLARE_OS_DEPLOY_ONLY must not repeat a worker.");
+  }
+  return deploymentOrder.filter((name) => requested.includes(name));
+}
+
 function runCommand(
   command: string,
   argv: string[],
@@ -762,7 +873,7 @@ function reportAiGateway(config: DeploymentConfig): void {
 
 async function main(): Promise<void> {
   requireSubmodule();
-  const config = await readDeployment(join(root, "deployment.jsonc"));
+  const config = await readDeployment(deploymentConfigPath());
   const generated = generateConfigs(config, {
     router: await readJsonc(join(root, packageDirs.router, "wrangler.jsonc")),
     workshop: await readJsonc(join(root, packageDirs.workshop, "wrangler.jsonc")),
@@ -784,16 +895,12 @@ async function main(): Promise<void> {
     if (check) run(["test"]);
     build(config);
     const deployArgs = check ? ["--dry-run"] : [];
-    if (config.errorReporting.enabled) {
-      deployWorker(packageDirs.errorReporter, deployArgs);
+    for (const name of deploymentSelection()) {
+      if (name === "errorReporter" && !config.errorReporting.enabled) continue;
+      // Router is last in the default order because it binds every other Worker. A selected live
+      // migration retains that same order while leaving untouched Workers untouched in Cloudflare.
+      deployWorker(packageDirs[name], deployArgs);
     }
-    deployWorker(packageDirs.context, deployArgs);
-    deployWorker(packageDirs.scheduler, deployArgs);
-    deployWorker(packageDirs.customGatekeeper, deployArgs);
-    deployWorker(packageDirs.proxyGatekeeper, deployArgs);
-    deployWorker(packageDirs.workshop, deployArgs);
-    // Last: it binds every one of the above.
-    deployWorker(packageDirs.router, deployArgs);
   } finally {
     await Promise.all(Object.values(generatedPaths).map((path) => rm(path, { force: true })));
   }

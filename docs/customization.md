@@ -209,9 +209,12 @@ The starter also deploys [`packages/gatekeeper-proxy`](../packages/gatekeeper-pr
 `gatekeeperProxy.services`; arbitrary hosts, paths, and wildcard resources are rejected. Public
 services default to GET/HEAD-only. The example `grafana` entry uses `writeMethods: "allow"` to
 demonstrate the requested full-access/no-prompt mode, so review or remove that entry before using
-an upstream where writes are dangerous. `tunnel` uses Cloudflare Access headers from Wrangler
-secrets, while `vpc` uses only the configured service binding. Request and response bodies are
-limited to 8 MiB, sensitive headers are removed in both directions, and redirects remain manual.
+an upstream where writes are dangerous; it is illustrative and is not part of the live deployment
+configuration unless you explicitly keep it. `tunnel` uses Cloudflare Access headers from Wrangler
+secrets, while `vpc` uses only the configured service binding and its deployment-side
+`serviceId`. Request and response bodies are limited to 8 MiB, sensitive headers are removed in
+both directions, and redirects remain manual. The live-migration overlay may use
+`preservedServices` to retain service bindings that are not owned by this starter.
 
 ## Code extensions
 
