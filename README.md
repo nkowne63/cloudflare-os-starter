@@ -46,7 +46,7 @@ This repository adds deployment controls around a pinned [Cloudflare OS](https:/
 
 <img src="docs/assets/architecture.svg" alt="Cloudflare OS deployment architecture: users reach one public route, owned by the router Worker, which serves the frontend and proxies /api to the Workshop backend and /gatekeeper/&lt;name&gt; to the matching Gatekeeper. Behind it is the pinned Cloudflare OS release, holding the Workshop kernel, Gadgets, Blueprints, and the default Gatekeepers. Service bindings connect it to the Workers and resources this repository owns: AI Gateway with no API token, custom Gatekeepers, the Error Reporter, and KV and R2 storage.">
 
-The deployment is six Workers. A **router** owns the public route and serves the frontend, proxying `/api` to the Workshop backend and `/gatekeeper/<name>` to whichever Gatekeeper the binding name matches; the Workshop, the Context, Scheduler and custom Gatekeepers, and the Error Reporter sit behind it with no route of their own, reachable only over service bindings.
+The deployment is seven Workers. A **router** owns the public route and serves the frontend, proxying `/api` to the Workshop backend and `/gatekeeper/<name>` to whichever Gatekeeper the binding name matches; the Workshop, the Context, Scheduler, custom Gatekeeper, proxy Gatekeeper, and Error Reporter sit behind it with no route of their own, reachable only over service bindings.
 
 The deploy command derives temporary Wrangler files from upstream base configs, builds the frontend in Cloudflare Access mode, deploys the private Error Reporter, the Gatekeepers and the Workshop before the router that binds them, and removes generated files even on failure. Secrets never enter tracked configuration.
 
@@ -95,6 +95,8 @@ With resource values left as `null`, Wrangler creates the three KV namespaces an
 
 A Workers AI model catalog is enabled by default and needs no API token: the Workshop reaches AI Gateway over its `WORKERS_AI` binding, which is pre-authenticated inside your account. See [AI models](docs/customization.md#ai-models) to add providers, change the gateway, or turn the catalog off.
 
+The starter includes a controlled HTTP [Gatekeeper Proxy](packages/gatekeeper-proxy/README.md). Configure exact `proxy://<service>` resources, transport, and write policy in `deployment.jsonc`; the example Grafana service demonstrates explicit approval-free write access and should be reviewed before production use.
+
 Git-backed Context collections are disabled by default. Accounts with Artifacts access can enable them in `context.artifacts`; see [Context Artifacts](docs/customization.md#context-artifacts).
 
 Backend error reporting is enabled without a vendor account. Explicit upstream issue events become structured logs in the private Error Reporter Worker; see [Observability and error reporting](docs/observability.md).
@@ -108,6 +110,7 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 - Open the Error Reporter Worker's [Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) and verify its structured `error_report` query surface.
 - Ask an agent to schedule something a few minutes out, and confirm it runs — that exercises the Scheduler Gatekeeper end to end.
 - Review logs for the router, Workshop, Context, Scheduler, custom Gatekeeper, and Error Reporter Workers.
+- Review the Proxy Gatekeeper logs as well; it should have no public route of its own.
 
 ## Customization
 
@@ -117,6 +120,7 @@ Backend error reporting is enabled without a vendor account. Explicit upstream i
 | Sign-in, routes, AI, storage, observability, Worker identities | [`deployment.jsonc`](deployment.jsonc) | Yes |
 | Logs, traces, error destinations, browser reporting | [Observability guide](docs/observability.md) | Sometimes |
 | Organization APIs and capabilities | [`packages/custom-gatekeeper`](packages/custom-gatekeeper/README.md) | Yes |
+| Controlled HTTP service capabilities | [`packages/gatekeeper-proxy`](packages/gatekeeper-proxy/README.md) and `deployment.jsonc` | Yes |
 | Product behavior unavailable through Worker boundaries | Pinned upstream fork/commit | Yes |
 
 The complete control reference and recipes live in [Customization](docs/customization.md). The upstream [`write-gatekeeper` skill](https://github.com/cloudflare/cloudflare-os/blob/main/.agents/skills/write-gatekeeper/SKILL.md) covers richer integrations.

@@ -33,6 +33,7 @@
     "scheduler": { "name": "<SCHEDULER_WORKER_NAME>" },
 
     "customGatekeeper": { "name": "<CUSTOM_GATEKEEPER_WORKER_NAME>" },
+    "proxyGatekeeper": { "name": "<PROXY_GATEKEEPER_WORKER_NAME>" },
     "errorReporter": { "name": "<ERROR_REPORTER_WORKER_NAME>" }
   },
 
@@ -91,6 +92,24 @@
   "customGatekeeper": {
     "name": "<ORGANIZATION_DISPLAY_NAME>",
     "message": "<ORGANIZATION_GUIDANCE>"
+  },
+
+  // Non-secret proxy allowlist. public writes are intentionally explicit: review every upstream
+  // before enabling `allow`; the default for a public service is read-only (`deny`). Tunnel Access
+  // values are only variable names and must be installed as Wrangler secrets on the proxy Worker.
+  "gatekeeperProxy": {
+    "services": {
+      "esm": {
+        "upstream": "https://esm.sh",
+        "via": "public",
+        "writeMethods": "deny"
+      },
+      "grafana": {
+        "upstream": "https://grafana.example.com",
+        "via": "public",
+        "writeMethods": "allow"
+      }
+    }
   },
 
   // Explicit backend issue reports go to a private Worker that emits structured console errors.

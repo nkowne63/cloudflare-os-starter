@@ -19,6 +19,7 @@ const validConfig: DeploymentConfig = {
     context: { name: "acme-cloudflare-os-context" },
     scheduler: { name: "acme-cloudflare-os-scheduler" },
     customGatekeeper: { name: "acme-cloudflare-os-custom" },
+    proxyGatekeeper: { name: "acme-cloudflare-os-proxy" },
     errorReporter: { name: "acme-cloudflare-os-errors" },
   },
   access: {
@@ -38,6 +39,10 @@ const validConfig: DeploymentConfig = {
     artifacts: { enabled: true, namespace: "acme-context-collections" },
   },
   customGatekeeper: { name: "Acme", message: "Use the company handbook." },
+  gatekeeperProxy: { services: {
+    esm: { upstream: "https://esm.sh", via: "public", writeMethods: "deny" },
+    grafana: { upstream: "https://grafana.example.com", via: "public", writeMethods: "allow" },
+  } },
   errorReporting: { enabled: true, environment: "production", release: "abc123" },
   resources: {
     blueprintsKvNamespaceId: "blueprints-kv-id",
@@ -74,6 +79,7 @@ async function baseConfigs(): Promise<BaseConfigs> {
     context: await baseConfig("../cloudflare-os/packages/gatekeeper-context/wrangler.jsonc"),
     scheduler: await baseConfig("../cloudflare-os/packages/gatekeeper-scheduler/wrangler.jsonc"),
     customGatekeeper: await baseConfig("../packages/custom-gatekeeper/wrangler.jsonc"),
+    proxyGatekeeper: await baseConfig("../packages/gatekeeper-proxy/wrangler.jsonc"),
     errorReporter: await baseConfig("../packages/error-reporter/wrangler.jsonc"),
   };
 }
@@ -225,6 +231,11 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
       service: "acme-cloudflare-os-custom",
       entrypoint: "GatekeeperVendor",
     },
+    {
+      binding: "GATEKEEPER_PROXY",
+      service: "acme-cloudflare-os-proxy",
+      entrypoint: "GatekeeperVendor",
+    },
   ]);
   assert.deepEqual(generated.workshop.kv_namespaces, [
     { binding: "BLUEPRINTS", id: "blueprints-kv-id" },
@@ -254,6 +265,29 @@ test("generates Access-mode Workshop, Context, and custom Gatekeeper configs", a
     (service) => service.binding === "FRONTEND_ERROR_REPORTER"), false);
 });
 
+test("registers the configured proxy Worker on Workshop and router", async () => {
+  const config = variant((c) => {
+    c.workers.proxyGatekeeper = { name: "acme-cloudflare-os-proxy" };
+    c.gatekeeperProxy = {
+      services: {
+        esm: { upstream: "https://esm.sh", via: "public", writeMethods: "deny" },
+        grafana: { upstream: "https://grafana.example.com", via: "public", writeMethods: "allow" },
+      },
+    };
+  });
+  const generated = generateConfigs(config, await baseConfigs());
+  const anyGenerated = generated as any;
+  assert.equal(anyGenerated.proxyGatekeeper.name, "acme-cloudflare-os-proxy");
+  assert.deepEqual(
+    generated.workshop.services!.find((service) => service.binding === "GATEKEEPER_PROXY"),
+    { binding: "GATEKEEPER_PROXY", service: "acme-cloudflare-os-proxy", entrypoint: "GatekeeperVendor" });
+  assert.deepEqual(
+    generated.router.services!.find((service) => service.binding === "GATEKEEPER_PROXY"),
+    { binding: "GATEKEEPER_PROXY", service: "acme-cloudflare-os-proxy" });
+  assert.equal(anyGenerated.proxyGatekeeper.vars.PROXY_SERVICES, JSON.stringify(config.gatekeeperProxy.services));
+  assert.ok(buildCommands(config).some(({ args }) => args.includes("gatekeeper-proxy")));
+});
+
 test("gives the router the public route, the frontend, and every service binding", async () => {
   const bases = await baseConfigs();
   const generated = generateConfigs(validConfig, bases);
@@ -268,6 +302,7 @@ test("gives the router the public route, the frontend, and every service binding
     { binding: "GATEKEEPER_CONTEXT", service: "acme-cloudflare-os-context" },
     { binding: "GATEKEEPER_SCHEDULER", service: "acme-cloudflare-os-scheduler" },
     { binding: "GATEKEEPER_CUSTOM", service: "acme-cloudflare-os-custom" },
+    { binding: "GATEKEEPER_PROXY", service: "acme-cloudflare-os-proxy" },
   ]);
   // Inherited untouched: the base config already carries the ASSETS binding, the SPA fallback, and
   // the /gatekeeper/* prefix an OAuth Gatekeeper redirect needs.

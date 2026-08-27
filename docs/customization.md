@@ -33,6 +33,7 @@ The custom logo appears in the app chrome, sign-in screens, and browser tab on e
 | `aiGateway` | Deployment-managed model catalog | Enabled by default over the Workers AI binding; which providers to advertise, and which gateway |
 | `context` | Context sharing boundary, snapshot KV, and optional Artifacts repositories | `null` to scope data to the public origin, or a pinned stable label; automatic or existing KV; Git-backed collections disabled or enabled |
 | `customGatekeeper` | Example integration identity and guidance | Organization-specific display text |
+| `gatekeeperProxy` | Explicit HTTP service capabilities and write policies | Upstream URLs, transport mode, and per-service policy |
 | `errorReporting` | Private explicit-issue destination | Console Reporter enabled state, environment, and release metadata |
 | `resources` | Blueprint/avatar KV and blueprint-content R2 | `null` to provision or explicit IDs/names to reuse |
 | `observability` | Worker telemetry | Structured logs, invocation logs, traces, and sampling; see the [observability guide](observability.md) |
@@ -41,7 +42,7 @@ Secrets are never valid values in this file. Install them interactively with Wra
 
 ### Workers and routing
 
-The deployment is six Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
+The deployment is seven Workers. Keep their names unique: service bindings use these names, so update and deploy them together.
 
 | Worker | Role |
 | --- | --- |
@@ -50,11 +51,12 @@ The deployment is six Workers. Keep their names unique: service bindings use the
 | `context` | The Context Gatekeeper. |
 | `scheduler` | The Scheduler Gatekeeper, which gives agents scheduled and recurring work. |
 | `customGatekeeper` | This repository's example integration. |
+| `proxyGatekeeper` | The configured HTTP proxy integration. |
 | `errorReporter` | The private explicit-issue destination. |
 
 Context and Scheduler are *ambient*: upstream's release marks both `PREINSTALL`, so the hosted flow installs them on every instance and this starter deploys them for the same reason. Neither takes configuration beyond its name — the Scheduler takes none at all.
 
-Only the router takes a route; the other five are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all six. That keeps the router the single Access-protected way in.
+Only the router takes a route; the other six are reachable only over service bindings, and the deploy turns off `workers.dev` and [Preview URLs](https://developers.cloudflare.com/workers/configuration/previews/) on all seven. That keeps the router the single Access-protected way in.
 
 For production, set a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) on it:
 
@@ -199,6 +201,17 @@ The minimal example flow is:
 6. The Workshop service binding makes the vendor available to Cloudflare OS.
 
 Read the [package guide](../packages/custom-gatekeeper/README.md) and upstream [`write-gatekeeper` skill](https://github.com/cloudflare/cloudflare-os/blob/main/.agents/skills/write-gatekeeper/SKILL.md) before adding OAuth, URL-scoped resources, writes, simulations, hooks, configurator UI, or stricter observer verification.
+
+### Gatekeeper Proxy
+
+The starter also deploys [`packages/gatekeeper-proxy`](../packages/gatekeeper-proxy/README.md) as
+`GATEKEEPER_PROXY`. Its resources are exact `proxy://<service>` URLs from
+`gatekeeperProxy.services`; arbitrary hosts, paths, and wildcard resources are rejected. Public
+services default to GET/HEAD-only. The example `grafana` entry uses `writeMethods: "allow"` to
+demonstrate the requested full-access/no-prompt mode, so review or remove that entry before using
+an upstream where writes are dangerous. `tunnel` uses Cloudflare Access headers from Wrangler
+secrets, while `vpc` uses only the configured service binding. Request and response bodies are
+limited to 8 MiB, sensitive headers are removed in both directions, and redirects remain manual.
 
 ## Code extensions
 

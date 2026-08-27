@@ -25,6 +25,7 @@ const packageDirs = {
   context: "cloudflare-os/packages/gatekeeper-context",
   scheduler: "cloudflare-os/packages/gatekeeper-scheduler",
   customGatekeeper: "packages/custom-gatekeeper",
+  proxyGatekeeper: "packages/gatekeeper-proxy",
   errorReporter: "packages/error-reporter",
 } as const;
 const generatedPaths = Object.fromEntries(
@@ -32,6 +33,8 @@ const generatedPaths = Object.fromEntries(
 ) as Record<keyof typeof packageDirs, string>;
 const defaultContextArtifactsNamespace = "gatekeeper-context-collections";
 const accountIdPattern = /^[a-f\d]{32}$/i;
+const proxyServiceNamePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const proxyEnvNamePattern = /^[A-Z][A-Z0-9_]{0,127}$/;
 
 const requiredPaths = [
   "accountId",
@@ -40,6 +43,7 @@ const requiredPaths = [
   "workers.context.name",
   "workers.scheduler.name",
   "workers.customGatekeeper.name",
+  "workers.proxyGatekeeper.name",
   "access.issuer",
   "access.audience",
   "access.admins",
@@ -47,6 +51,7 @@ const requiredPaths = [
   "errorReporting.enabled",
   "customGatekeeper.name",
   "customGatekeeper.message",
+  "gatekeeperProxy.services",
   "observability.enabled",
   "observability.headSamplingRate",
   "observability.logs.invocationLogs",
@@ -194,6 +199,7 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
 
   const stringPaths = activePaths.filter((path) => ![
     "access.admins",
+    "gatekeeperProxy.services",
     "aiGateway.enabled",
     "aiGateway.providers",
     "errorReporting.enabled",
@@ -217,11 +223,13 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     .map(([, worker]) => worker.name);
   if (new Set(workerNames).size !== workerNames.length) {
     throw new Error(
-      "Router, Workshop, Context, Scheduler, and custom Gatekeeper names must be unique.");
+      "Router, Workshop, Context, Scheduler, custom Gatekeeper, and proxy Gatekeeper names must be unique.");
   }
   if (!workerNames.every((name) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name))) {
     throw new Error("Worker names must use lowercase letters, numbers, and hyphens.");
   }
+
+  validateProxyServices(config.gatekeeperProxy.services);
 
   const route = config.workers.router.route;
   if (!route || Boolean(route.workersDev) === Boolean(route.customDomain)) {
@@ -306,6 +314,34 @@ export function validateConfig(config: DeploymentConfig): DeploymentConfig {
     throw new Error("Observability trace sampling must be between 0 and 1.");
   }
   return config;
+}
+
+function validateProxyServices(services: unknown): void {
+  if (!services || typeof services !== "object" || Array.isArray(services) || !Object.keys(services).length) {
+    throw new Error("gatekeeperProxy.services must define at least one service.");
+  }
+  for (const [name, value] of Object.entries(services)) {
+    if (!proxyServiceNamePattern.test(name) || name === "*") throw new Error(`Invalid proxy service name: ${name}`);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Malformed proxy service: ${name}`);
+    const service = value as Record<string, unknown>;
+    const allowedFields = new Set(["upstream", "via", "writeMethods", "binding", "auth"]);
+    if (Object.keys(service).some((key) => !allowedFields.has(key))) throw new Error(`Unknown proxy service field: ${name}`);
+    let upstream: URL;
+    try { upstream = new URL(typeof service.upstream === "string" ? service.upstream : ""); } catch { throw new Error(`Invalid proxy upstream: ${name}`); }
+    if (!["http:", "https:"].includes(upstream.protocol) || upstream.username || upstream.password || upstream.search || upstream.hash) {
+      throw new Error(`Invalid proxy upstream: ${name}`);
+    }
+    if (!["public", "tunnel", "vpc"].includes(service.via as string)) throw new Error(`Invalid proxy via: ${name}`);
+    if (!["deny", "approve", "allow"].includes(service.writeMethods as string)) throw new Error(`Invalid proxy writeMethods: ${name}`);
+    if (service.binding !== undefined && (typeof service.binding !== "string" || !proxyEnvNamePattern.test(service.binding))) throw new Error(`Invalid proxy binding: ${name}`);
+    if (service.via !== "vpc" && service.binding !== undefined) throw new Error(`Proxy binding is only valid for vpc: ${name}`);
+    if (service.auth !== undefined) {
+      if (service.via !== "tunnel" || !service.auth || typeof service.auth !== "object" || Array.isArray(service.auth)) throw new Error(`Invalid proxy auth: ${name}`);
+      for (const [key, variable] of Object.entries(service.auth)) {
+        if (!["clientIdVar", "clientSecretVar"].includes(key) || typeof variable !== "string" || !proxyEnvNamePattern.test(variable)) throw new Error(`Invalid proxy auth variable: ${name}`);
+      }
+    }
+  }
 }
 
 /**
@@ -409,7 +445,7 @@ function setCommon(
   delete config.routes;
   if (route.customDomain) Object.assign(config, routeConfig(route));
   // The router is the Access-protected origin, and a preview URL is an unauthenticated path around
-  // it. Off on every Worker: the five behind the router have no business being publicly reachable
+  // it. Off on every Worker: the six behind the router have no business being publicly reachable
   // either.
   config.preview_urls = false;
   config.observability = {
@@ -435,6 +471,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
   const context = structuredClone(bases.context);
   const scheduler = structuredClone(bases.scheduler);
   const customGatekeeper = structuredClone(bases.customGatekeeper);
+  const proxyGatekeeper = structuredClone(bases.proxyGatekeeper);
   const errorReporter = config.errorReporting.enabled
     ? structuredClone(bases.errorReporter)
     : undefined;
@@ -448,6 +485,7 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     { binding: "GATEKEEPER_CONTEXT", service: config.workers.context.name },
     { binding: "GATEKEEPER_SCHEDULER", service: config.workers.scheduler.name },
     { binding: "GATEKEEPER_CUSTOM", service: config.workers.customGatekeeper.name },
+    { binding: "GATEKEEPER_PROXY", service: config.workers.proxyGatekeeper.name },
   ];
 
   setCommon(workshop, config, config.workers.workshop.name);
@@ -513,6 +551,11 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
       service: config.workers.customGatekeeper.name,
       entrypoint: "GatekeeperVendor",
     },
+    {
+      binding: "GATEKEEPER_PROXY",
+      service: config.workers.proxyGatekeeper.name,
+      entrypoint: "GatekeeperVendor",
+    },
   ];
   workshop.kv_namespaces = [
     { binding: "BLUEPRINTS", ...(config.resources.blueprintsKvNamespaceId
@@ -552,12 +595,17 @@ export function generateConfigs(config: DeploymentConfig, bases: BaseConfigs): G
     CUSTOM_MESSAGE: config.customGatekeeper.message,
   };
 
+  setCommon(proxyGatekeeper, config, config.workers.proxyGatekeeper.name);
+  proxyGatekeeper.vars = {
+    PROXY_SERVICES: JSON.stringify(config.gatekeeperProxy.services),
+  };
+
   if (errorReporter) {
     setCommon(errorReporter, config, config.workers.errorReporter!.name);
   }
 
   return {
-    router, workshop, context, scheduler, customGatekeeper,
+    router, workshop, context, scheduler, customGatekeeper, proxyGatekeeper,
     ...(errorReporter && { errorReporter }),
   };
 }
@@ -605,6 +653,7 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler", "build:app") },
     { args: submoduleBuild("@gadgets/gatekeeper-scheduler") },
     { args: ownBuild("custom-gatekeeper") },
+    { args: ownBuild("gatekeeper-proxy") },
     ...(config.errorReporting.enabled ? [{ args: ownBuild("error-reporter") }] : []),
     // Access mode is a build-time constant in the frontend bundle (`src/useAuth.ts`), so it is set
     // here rather than inherited: a bundle built under a different value is wrong, not just stale.
@@ -720,6 +769,7 @@ async function main(): Promise<void> {
     context: await readJsonc(join(root, packageDirs.context, "wrangler.jsonc")),
     scheduler: await readJsonc(join(root, packageDirs.scheduler, "wrangler.jsonc")),
     customGatekeeper: await readJsonc(join(root, packageDirs.customGatekeeper, "wrangler.jsonc")),
+    proxyGatekeeper: await readJsonc(join(root, packageDirs.proxyGatekeeper, "wrangler.jsonc")),
     errorReporter: await readJsonc(join(root, packageDirs.errorReporter, "wrangler.jsonc")),
   });
   reportAiGateway(config);
@@ -740,6 +790,7 @@ async function main(): Promise<void> {
     deployWorker(packageDirs.context, deployArgs);
     deployWorker(packageDirs.scheduler, deployArgs);
     deployWorker(packageDirs.customGatekeeper, deployArgs);
+    deployWorker(packageDirs.proxyGatekeeper, deployArgs);
     deployWorker(packageDirs.workshop, deployArgs);
     // Last: it binds every one of the above.
     deployWorker(packageDirs.router, deployArgs);

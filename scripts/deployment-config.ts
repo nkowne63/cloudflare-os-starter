@@ -31,6 +31,15 @@ export interface RouterRoute {
   customDomain?: string;
 }
 
+/** A non-secret service definition passed to the Gatekeeper Proxy Worker. */
+export interface ProxyServiceConfigInput {
+  upstream: string;
+  via: "public" | "tunnel" | "vpc";
+  writeMethods: "deny" | "approve" | "allow";
+  binding?: string;
+  auth?: { clientIdVar?: string; clientSecretVar?: string };
+}
+
 /** Cloudflare Access trust boundary and the `/admin` allowlist. */
 export interface AccessConfig {
   /** Access team origin, HTTPS with no path. */
@@ -112,6 +121,7 @@ export interface DeploymentConfig {
     context: { name: string };
     scheduler: { name: string };
     customGatekeeper: { name: string };
+    proxyGatekeeper: { name: string };
     /** Only required when `errorReporting.enabled`. */
     errorReporter?: { name: string };
   };
@@ -120,6 +130,8 @@ export interface DeploymentConfig {
   context: ContextConfig;
   /** Display text the example custom Gatekeeper serves to agents. */
   customGatekeeper: { name: string; message: string };
+  /** Non-secret HTTP service definitions for the Gatekeeper Proxy. */
+  gatekeeperProxy: { services: Record<string, ProxyServiceConfigInput> };
   /** Private explicit-issue destination. */
   errorReporting: { enabled: boolean; environment?: string; release?: string | null };
   /** Workshop KV/R2. `null` requests Wrangler automatic provisioning. */
@@ -182,6 +194,7 @@ export interface GeneratedConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
+  proxyGatekeeper: ProdWranglerConfig;
   /** Absent when `errorReporting.enabled` is false. */
   errorReporter?: ProdWranglerConfig;
 }
@@ -193,6 +206,7 @@ export interface BaseConfigs {
   context: ProdWranglerConfig;
   scheduler: ProdWranglerConfig;
   customGatekeeper: ProdWranglerConfig;
+  proxyGatekeeper: ProdWranglerConfig;
   errorReporter: ProdWranglerConfig;
 }
 
