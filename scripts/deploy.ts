@@ -723,8 +723,12 @@ function ownBuild(pkg: string, task = "build"): string[] {
  * The ordering matters at the end: the frontend has to build before the router deploy picks up
  * `../workshop-frontend/dist` as its assets.
  */
-export function buildCommands(config: DeploymentConfig): BuildCommand[] {
-  return [
+export function buildCommands(
+  config: DeploymentConfig,
+  selection: readonly DeployableWorker[] = deploymentOrder,
+): BuildCommand[] {
+  const selected = new Set(selection);
+  const commands: BuildCommand[] = [
     // `build:app` first, and separately. `gatekeeper-context`'s `build` is a package.json script
     // that spawns `vp run --cache build:app` itself, and the outer `--no-cache` does not reach a
     // nested invocation carrying its own flag -- measured: the configurator app replayed from
@@ -744,6 +748,20 @@ export function buildCommands(config: DeploymentConfig): BuildCommand[] {
     { args: submoduleBuild("@gadgets/router") },
     { args: submoduleBuild("@gadgets/workshop-backend") },
   ];
+  return commands.filter(({ args }) => {
+    const command = args.join(" ");
+    if (command.includes("@gadgets/gatekeeper-context")) return selected.has("context");
+    if (command.includes("@gadgets/gatekeeper-scheduler")) return selected.has("scheduler");
+    if (command.includes("custom-gatekeeper")) return selected.has("customGatekeeper");
+    if (command.includes("gatekeeper-proxy")) return selected.has("proxyGatekeeper");
+    if (command.includes("error-reporter")) return selected.has("errorReporter");
+    if (command.includes("@gadgets/workshop-frontend")) {
+      return selected.has("workshop") || selected.has("router");
+    }
+    if (command.includes("@gadgets/router")) return selected.has("router");
+    if (command.includes("@gadgets/workshop-backend")) return selected.has("workshop");
+    return false;
+  });
 }
 
 // `allowTrailingComma` because wrangler accepts them and upstream uses them: the Scheduler's base
@@ -844,8 +862,8 @@ function requireSubmodule(): void {
   }
 }
 
-function build(config: DeploymentConfig): void {
-  for (const { args, env } of buildCommands(config)) {
+function build(config: DeploymentConfig, selection: readonly DeployableWorker[]): void {
+  for (const { args, env } of buildCommands(config, selection)) {
     run(args, root, env ? { ...process.env, ...env } : process.env);
   }
 }
@@ -893,7 +911,7 @@ async function main(): Promise<void> {
     }
     const check = process.argv.includes("--check");
     if (check) run(["test"]);
-    build(config);
+    build(config, deploymentSelection());
     const deployArgs = check ? ["--dry-run"] : [];
     for (const name of deploymentSelection()) {
       if (name === "errorReporter" && !config.errorReporting.enabled) continue;

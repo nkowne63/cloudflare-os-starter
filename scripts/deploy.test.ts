@@ -371,6 +371,12 @@ test("selects only the explicitly requested live deployment workers", () => {
   ]);
 });
 
+test("builds only the selected proxy package for a proxy-only deployment", () => {
+  const commands = buildCommands(validConfig, ["proxyGatekeeper"])
+    .map(({ args }) => args.join(" "));
+  assert.deepEqual(commands, ["exec vp run -F gatekeeper-proxy --no-cache build"]);
+});
+
 test("gives the router the public route, the frontend, and every service binding", async () => {
   const bases = await baseConfigs();
   const generated = generateConfigs(validConfig, bases);
